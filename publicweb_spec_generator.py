@@ -8,11 +8,12 @@
 其余原有代码完全原样保留，无额外修改
 """
 import os
-# 本地pandoc路径（保持原有配置）
-import os
-# 智能判断：如果是 Windows 本地运行就用 D 盘路径，否则让系统自动找
+# 如果是 Windows 本地运行，使用 D 盘路径；否则让系统自动查找
 if os.name == 'nt':
     os.environ["PYPANDOC_PANDOC"] = r"D:\software\pandoc\pandoc-3.10\pandoc.exe"
+else:
+    # 云端 Linux 环境，pypandoc 会自动找到 pandoc-binary 安装的路径
+    pass
 
 import streamlit as st
 import pandas as pd
