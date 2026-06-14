@@ -700,11 +700,29 @@ elif st.session_state.step == 14:
     st.divider()
     render_nav_btn()
 
-# 15 生成最终文档【复原稳定临时文件方案，finally强制删临时文件】
+# 15 生成最终文档【手动按钮触发生成Word，修复前端DOM报错】
 elif st.session_state.step == 15:
     st.markdown("# 生成规格书文档")
     st.divider()
+
+    # 初始化导出状态标记
+    if "run_export" not in st.session_state:
+        st.session_state.run_export = False
+
+    # 【回调函数：统一放在区块顶部，避免lambda重绘报错】
+    def reset_to_start():
+        st.session_state["step"] = 1
+
+    def trigger_export():
+        st.session_state["run_export"] = True
+
+    # 1. 输入自定义文件名
     export_filename = st.text_input("自定义导出文件名称", value="设备技术规格书", key="export_name_input")
+
+    # 2. 手动触发生成Word按钮
+    st.button("📄 点击开始生成Word文档", on_click=trigger_export, type="primary", use_container_width=True)
+    st.divider()
+
     fill = st.session_state.form
     opts = st.session_state.opts
     dyn_append_list = st.session_state.dyn_appendix
@@ -721,7 +739,7 @@ elif st.session_state.step == 15:
         else:
             selected_dfs[key] = pd.DataFrame()
 
-    # ========== 正文拼接 ==========
+    # ========== 正文拼接（完全保留原有逻辑） ==========
     doc.append("# 1 定义与缩略语")
     doc.append(df_to_md(selected_dfs["dict"]))
     doc.append("\n---\n")
@@ -824,9 +842,8 @@ elif st.session_state.step == 15:
     doc.append(fill["other_content"])
     doc.append("\n---\n")
 
-    # ========== 动态收集启用的附录，丢弃原始字母，重新从A连续编号，自动向前补位 ==========
+    # ========== 动态收集启用的附录，自动向前补位、连续编号 ==========
     append_list = []
-    # 只存标题+内容，不带原始A/B/C标识
     if opts["is_trans_design"]:
         append_list.append(("供应商提交文件清单", fill["appendix_a"]))
     if opts["have_append_b"]:
@@ -838,7 +855,7 @@ elif st.session_state.step == 15:
         if item["name"].strip() or item["content"].strip():
             append_list.append((item["name"], item["content"]))
 
-    # 输出附录标题（自动从A开始连续编号，向前补位）
+    # 输出附录标题（自动从A开始连续编号）
     title_lines = []
     for idx, (name, content) in enumerate(append_list):
         curr_letter = chr(ord("A") + idx)
@@ -846,7 +863,7 @@ elif st.session_state.step == 15:
     doc.append("\n".join(title_lines))
     doc.append("")
 
-    # 输出附录正文（序号连续无空缺）
+    # 输出附录正文
     for idx, (name, content) in enumerate(append_list):
         curr_letter = chr(ord("A") + idx)
         doc.append(f"## 附录{curr_letter} {name}")
@@ -856,63 +873,64 @@ elif st.session_state.step == 15:
     doc.append(f"\n文档生成时间：{now}")
     md_content = "\n".join(doc)
 
-    # ===================== 修复版：Word 导出逻辑 =====================
-    import tempfile
+    # 常驻：下载Markdown（随时可用）
+    st.download_button(
+        label="📥 下载 Markdown 文件",
+        data=md_content.encode("utf-8"),
+        file_name=f"{export_filename}.md",
+        mime="text/markdown",
+        use_container_width=True,
+        key="dl_md_final"
+    )
+    st.divider()
 
-    # 固定纯英文临时文件名，规避中文文件名报错
-    docx_bytes = None
-    convert_ok = True
-    err_msg = ""
-    temp_docx_path = None  # 用于记录临时文件路径以便清理
+    # 常驻：文档预览
+    with st.expander("📖 预览完整文档"):
+        st.markdown(md_content)
+    st.divider()
 
-    try:
-        # 1. 创建一个安全的临时文件（后缀为 .docx）
-        with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tmp_file:
-            temp_docx_path = tmp_file.name
+    # ========== 仅点击按钮后，才执行 Pandoc 转换 + Word 下载 ==========
+    if st.session_state.run_export:
+        import tempfile
+        docx_bytes = None
+        convert_ok = True
+        err_msg = ""
+        temp_docx_path = None
 
-        # 2. 使用 pypandoc 的 outputfile 参数进行转换
-        # 注意：这里不接收返回值，而是让 pandoc 写入文件
-        pypandoc.convert_text(
-            source=md_content,
-            format="markdown",
-            to="docx",
-            outputfile=temp_docx_path,  # 【关键修改】指定输出文件路径
-            extra_args=["--standalone"]
-        )
+        try:
+            # 创建安全临时文件
+            with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tmp_file:
+                temp_docx_path = tmp_file.name
 
-        # 3. 读取生成的临时文件内容为二进制流
-        with open(temp_docx_path, "rb") as f:
-            docx_bytes = f.read()
+            # pandoc 转换
+            pypandoc.convert_text(
+                source=md_content,
+                format="markdown",
+                to="docx",
+                outputfile=temp_docx_path,
+                extra_args=["--standalone"]
+            )
 
-    except Exception as e:
-        convert_ok = False
-        err_msg = str(e)
-    finally:
-        # 4. 无论成功失败，强制删除临时文件
-        if temp_docx_path and os.path.exists(temp_docx_path):
-            try:
-                os.remove(temp_docx_path)
-            except Exception:
-                pass  # 防止因权限问题导致程序崩溃
+            # 读取二进制内容
+            with open(temp_docx_path, "rb") as f:
+                docx_bytes = f.read()
 
-    # ===================== 界面渲染与下载按钮 =====================
-    st.success("✅ 文档生成成功！")
-    col1, col2 = st.columns(2)
+        except Exception as e:
+            convert_ok = False
+            err_msg = str(e)
+        finally:
+            # 强制清理临时文件
+            if temp_docx_path and os.path.exists(temp_docx_path):
+                try:
+                    os.remove(temp_docx_path)
+                except Exception:
+                    pass
 
-    with col1:
-        st.download_button(
-            label="📥 下载 Markdown",
-            data=md_content.encode("utf-8"),
-            file_name=f"{export_filename}.md",
-            mime="text/markdown",
-            use_container_width=True,
-            key="dl_md_final"
-        )
-
-    with col2:
+        # 展示转换结果 & Word下载按钮
         if convert_ok and docx_bytes:
+            st.success("✅ Word文档生成完毕！")
             st.download_button(
-                label="📥 下载 Word",
+                label="📥 下载 Word 文档",
                 data=docx_bytes,
                 file_name=f"{export_filename}.docx",
                 mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -922,15 +940,15 @@ elif st.session_state.step == 15:
             )
         else:
             st.error(f"Word转换失败：{err_msg}")
-            st.caption("请检查 pandoc 路径是否正确")
+            st.caption("可先下载Markdown，使用WPS/Typora另存为Word")
+
+        # 重置状态，支持多次点击生成
+        st.session_state.run_export = False
 
     st.divider()
-    with st.expander("📖 预览完整文档"):
-        st.markdown(md_content)
-
-    st.divider()
+    # 底部导航按钮（已修复，无lambda）
     col1, col2 = st.columns([1, 1])
     with col1:
         st.button("← 返回上一章", on_click=prev_page, use_container_width=True, key="btn_back_final")
     with col2:
-        st.button("🔄 重新开始", on_click=lambda: st.session_state.__setitem__("step", 1), use_container_width=True, key="btn_restart_final")
+        st.button("🔄 重新开始", on_click=reset_to_start, use_container_width=True, key="btn_restart_final")
