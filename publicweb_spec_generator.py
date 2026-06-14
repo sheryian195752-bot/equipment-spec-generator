@@ -8,6 +8,7 @@
 其余原有代码完全原样保留，无额外修改
 """
 import os
+import tempfile
 # 如果是 Windows 本地运行，使用 D 盘路径；否则让系统自动查找
 if os.name == 'nt':
     os.environ["PYPANDOC_PANDOC"] = r"D:\software\pandoc\pandoc-3.10\pandoc.exe"
@@ -684,15 +685,14 @@ elif st.session_state.step == 14:
 
     # 渲染所有动态附录（D、E、F...）
     for idx, item in enumerate(st.session_state.dyn_appendix):
+        # 用字母作为key的一部分，比纯索引更稳定
         letter = item["letter"]
         st.markdown(f"**附录{letter}**")
-        # 附录名称输入
         item["name"] = st.text_input(
-            f"附录{letter} 名称", value=item["name"], key=f"dyn_name_{idx}"
+            f"附录{letter} 名称", value=item["name"], key=f"dyn_name_{letter}"
         )
-        # 附录内容输入
         item["content"] = st.text_area(
-            f"附录{letter} 正文内容", value=item["content"], height=180, key=f"dyn_content_{idx}"
+            f"附录{letter} 正文内容", value=item["content"], height=180, key=f"dyn_content_{letter}"
         )
         st.divider()
 
