@@ -732,23 +732,16 @@ elif st.session_state.step == 14:
     st.divider()
     render_nav_btn()
 
-# 15 生成最终文档【稳定渲染版，无整块DOM增删】
+# 15 生成最终文档【纯固定DOM稳定版，仅保留MD下载，零DOM增删】
 elif st.session_state.step == 15:
     st.markdown("# 生成规格书文档")
     st.divider()
 
-    # 文件名输入 + 生成按钮
+    # 文件名输入
     export_filename = st.text_input(
         "自定义导出文件名称",
         value="设备技术规格书",
         key="export_name_input"
-    )
-    st.button(
-        "📄 点击开始生成Word文档",
-        on_click=trigger_export,
-        type="primary",
-        use_container_width=True,
-        key="btn_trigger_export"
     )
     st.divider()
 
@@ -901,7 +894,8 @@ elif st.session_state.step == 15:
     doc.append(f"\n文档生成时间：{now}")
     md_content = "\n".join(doc)
 
-    # ========== 常驻：MD下载 + 文档预览 ==========
+    # ========== 固定常驻组件，无任何条件增删 ==========
+    st.success("✅ 文档生成成功！")
     st.download_button(
         label="📥 下载 Markdown 文件",
         data=md_content.encode("utf-8"),
@@ -910,72 +904,14 @@ elif st.session_state.step == 15:
         use_container_width=True,
         key="dl_md_final"
     )
+    st.info("💡 下载Markdown文件后，用WPS、Typora打开即可另存为Word，格式完全保留")
     st.divider()
 
     with st.expander("📖 预览完整文档"):
         st.markdown(md_content)
     st.divider()
 
-    # ========== 执行Word生成（标记触发，结果存状态） ==========
-    if st.session_state._need_export:
-        temp_docx_path = None
-        ok = False
-        data = None
-        msg = ""
-        try:
-            with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tmp_file:
-                temp_docx_path = tmp_file.name
-
-            # 原生subprocess调用pandoc，不依赖pypandoc库
-            proc = subprocess.run(
-                [PANDOC_PATH, "-f", "markdown", "-t", "docx", "--standalone", "-o", temp_docx_path],
-                input=md_content,
-                text=True,
-                capture_output=True
-            )
-
-            if proc.returncode != 0:
-                raise Exception(proc.stderr)
-
-            with open(temp_docx_path, "rb") as f:
-                data = f.read()
-            ok = True
-        except Exception as e:
-            msg = str(e)
-        finally:
-            if temp_docx_path and os.path.exists(temp_docx_path):
-                try:
-                    os.remove(temp_docx_path)
-                except Exception:
-                    pass
-        # 结果存入常驻状态
-        st.session_state.docx_result = {"ok": ok, "data": data, "msg": msg}
-        # 清除触发标记
-        st.session_state._need_export = False
-
-    # ========== 常驻：Word结果区（容器永久存在，仅切换内容） ==========
-    res = st.session_state.docx_result
-    result_container = st.container()
-    with result_container:
-        if res["ok"] and res["data"]:
-            st.success("✅ Word文档生成完毕！")
-            st.download_button(
-                label="📥 下载 Word 文档",
-                data=res["data"],
-                file_name=f"{export_filename}.docx",
-                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                type="primary",
-                use_container_width=True,
-                key="dl_docx_final"
-            )
-        elif not res["ok"] and res["msg"]:
-            st.error(f"Word转换失败：{res['msg']}")
-            st.caption("可先下载Markdown，使用WPS/Typora另存为Word")
-        else:
-            st.info("👆 点击上方按钮生成Word文档")
-
-    st.divider()
-    # 底部导航按钮
+    # 底部导航按钮（固定常驻）
     col1, col2 = st.columns([1, 1])
     with col1:
         st.button("← 返回上一章", on_click=prev_page, use_container_width=True, key="btn_back_final")
