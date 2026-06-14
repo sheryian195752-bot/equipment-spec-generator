@@ -10,14 +10,16 @@
 """
 import os
 import tempfile
+import subprocess
 
 # 自动适配运行环境：Windows本地指定pandoc路径，云端Linux使用系统预装
 if os.name == 'nt':
-    os.environ["PYPANDOC_PANDOC"] = r"D:\software\pandoc\pandoc-3.10\pandoc.exe"
+    PANDOC_PATH = r"D:\software\pandoc\pandoc-3.10\pandoc.exe"
+else:
+    PANDOC_PATH = "pandoc"
 
 import streamlit as st
 import pandas as pd
-import pypandoc
 from datetime import datetime
 
 # ===================== 页面基础配置 =====================
@@ -923,13 +925,18 @@ elif st.session_state.step == 15:
         try:
             with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tmp_file:
                 temp_docx_path = tmp_file.name
-            pypandoc.convert_text(
-                source=md_content,
-                format="markdown",
-                to="docx",
-                outputfile=temp_docx_path,
-                extra_args=["--standalone"]
+
+            # 原生subprocess调用pandoc，不依赖pypandoc库
+            proc = subprocess.run(
+                [PANDOC_PATH, "-f", "markdown", "-t", "docx", "--standalone", "-o", temp_docx_path],
+                input=md_content,
+                text=True,
+                capture_output=True
             )
+
+            if proc.returncode != 0:
+                raise Exception(proc.stderr)
+
             with open(temp_docx_path, "rb") as f:
                 data = f.read()
             ok = True
