@@ -1,20 +1,19 @@
 # -*- coding: utf-8 -*-
 """
-设备规格书生成工具【精准定向修改版】
-改动仅3处：
-1. 附录C增加启用复选框；
-2. 导出动态附录排序，未勾选附录自动前移补位；
-3. pandoc换回稳定临时文件方案，finally强制删临时文件
-其余原有代码完全原样保留，无额外修改
+设备规格书生成工具【稳定部署版】
+修复说明：
+1. 附录C独立勾选开关，未启用附录自动向前补位、连续编号无空缺
+2. 移除全部lambda匿名回调，全局统一命名函数，彻底解决云端removeChild DOM报错
+3. Word导出结果常驻渲染，不整块增删DOM节点，前端渲染时序稳定
+4. 自动适配Windows本地 / Linux云端双环境，pandoc路径自动匹配
+5. 所有组件key唯一稳定，动态附录采用字母标识，避免节点复用错乱
 """
 import os
 import tempfile
-# 如果是 Windows 本地运行，使用 D 盘路径；否则让系统自动查找
+
+# 自动适配运行环境：Windows本地指定pandoc路径，云端Linux使用系统预装
 if os.name == 'nt':
     os.environ["PYPANDOC_PANDOC"] = r"D:\software\pandoc\pandoc-3.10\pandoc.exe"
-else:
-    # 云端 Linux 环境，pypandoc 会自动找到 pandoc-binary 安装的路径
-    pass
 
 import streamlit as st
 import pandas as pd
@@ -32,7 +31,7 @@ st.set_page_config(
 EXCEL_DIR = "./database"
 os.makedirs(EXCEL_DIR, exist_ok=True)
 
-# ===================== 编制规则（完全不变） =====================
+# ===================== 编制规则 =====================
 RULES = {
     # 1 定义与缩略语
     "define_abbr": "根据设备技术规格书中采用的专用术语、符号、代号或外文缩写词，若在现行的国家标准、行业标准中尚无规定时，应进行说明，如系统码、EOMM（设备运行维修手册）、EOMR（设备完工报告）等。",
@@ -109,9 +108,17 @@ if "opts" not in st.session_state:
         "have_append_c": False
     }
 
-# 动态自定义附录：D/E/F... 存储列表
+# 动态自定义附录
 if "dyn_appendix" not in st.session_state:
     st.session_state.dyn_appendix = []
+
+# Word生成结果常驻状态（避免条件渲染增删DOM）
+if "docx_result" not in st.session_state:
+    st.session_state.docx_result = {"ok": False, "data": None, "msg": ""}
+
+# Word生成内部触发标记
+if "_need_export" not in st.session_state:
+    st.session_state._need_export = False
 
 # ===================== 数据库配置 =====================
 DB_CONFIG = {
@@ -124,7 +131,7 @@ DB_CONFIG = {
     "interface": {"name": "接口清单", "file": "interface_db.xlsx"}
 }
 
-# 加载内嵌数据库（缓存+空值处理）
+# 加载内嵌数据库
 @st.cache_data(show_spinner=False)
 def load_all_databases():
     db_dict = {}
@@ -145,7 +152,7 @@ db_all = load_all_databases()
 if "db_selected_idx" not in st.session_state:
     st.session_state.db_selected_idx = {key: [] for key in DB_CONFIG.keys()}
 
-# ===================== 工具函数（完整补齐，无未定义报错） =====================
+# ===================== 全局统一工具函数 & 回调函数 =====================
 def df_to_md(df):
     """表格转Markdown，自动填充空单元格"""
     if df.empty:
@@ -186,21 +193,30 @@ def render_nav_btn():
     with col2:
         st.button("下一章 →", on_click=next_page, type="primary", use_container_width=True, key=f"btn_next_{st.session_state.step}")
 
-# 获取下一个附录字母（C之后依次 D、E、F...）
 def get_next_letter():
+    """获取下一个自定义附录字母"""
     used = [item["letter"] for item in st.session_state.dyn_appendix]
     base = ord("C")
     idx = len(used) + 1
     return chr(base + idx)
 
-# 添加动态附录回调函数
 def add_dyn_append():
+    """新增动态附录回调"""
     new_letter = get_next_letter()
     st.session_state.dyn_appendix.append({
         "letter": new_letter,
         "name": "",
         "content": ""
     })
+
+def reset_to_start():
+    """回到首页回调，同步清空生成结果"""
+    st.session_state.step = 1
+    st.session_state.docx_result = {"ok": False, "data": None, "msg": ""}
+
+def trigger_export():
+    """触发生成Word回调"""
+    st.session_state._need_export = True
 
 # ===================== 左侧导航栏 =====================
 with st.sidebar:
@@ -246,7 +262,7 @@ if st.session_state.step == 1:
 4. 附录规则：
    - 附录A：第3章节勾选对应复选框才显示填写框；
    - 附录B：勾选启用接口清单表格；
-   - 附录C：新增独立勾选开关控制是否启用；
+   - 附录C：独立勾选开关控制是否启用；
    - 可无限新增D/E/F…自定义附录，自动编号、自定义名称；
    - 未启用附录自动跳过，后续附录序号向前补位，无空缺。
 """)
@@ -345,7 +361,7 @@ elif st.session_state.step == 4:
         label_visibility="collapsed", key="input_file_interface"
     )
 
-    # 附录A开关（勾选后附录页面展示输入框）
+    # 附录A开关
     st.session_state.opts["is_trans_design"] = st.checkbox(
         "为设计院转供应商做施工设计（自动生成附录A）",
         value=st.session_state.opts["is_trans_design"],
@@ -633,94 +649,105 @@ elif st.session_state.step == 13:
     st.divider()
     render_nav_btn()
 
-# 14 13 附录【新增附录C勾选开关，页面顺序A→B→C不变】
+# 14 13 附录【稳定渲染版】
 elif st.session_state.step == 14:
     st.markdown("# 13 附录")
     st.divider()
+    opts = st.session_state.opts
 
-    # 1、优先渲染附录A（勾选开关控制显示）
-    if st.session_state.opts["is_trans_design"]:
-        st.subheader("附录A 供应商提交文件清单（填写）")
+    # 附录A 容器常驻，内容切换，不增删父节点
+    st.subheader("附录A 供应商提交文件清单")
+    if opts["is_trans_design"]:
         st.session_state.form["appendix_a"] = st.text_area(
-            "附录A正文内容", value=st.session_state.form["appendix_a"], height=220,
+            "附录A正文内容",
+            value=st.session_state.form["appendix_a"],
+            height=220,
             key="input_appendix_a"
         )
-        st.divider()
+    else:
+        st.info("前往第3章节勾选「转供应商施工设计」，即可启用本附录填写")
+    st.divider()
 
-    # 2、渲染附录B 接口清单
+    # 附录B
     st.session_state.opts["have_append_b"] = st.checkbox(
-        "包含附录B 接口清单", value=st.session_state.opts["have_append_b"],
+        "包含附录B 接口清单",
+        value=opts["have_append_b"],
         key="chk_append_b"
     )
-    if st.session_state.opts["have_append_b"]:
+    if opts["have_append_b"]:
         df_if = db_all["interface"]
         opts_if = get_select_options(df_if)
         if opts_if:
             sel_if = st.multiselect(
-                "选择接口清单条目", opts_if,
+                "选择接口清单条目",
+                opts_if,
                 default=[opts_if[i] for i in st.session_state.db_selected_idx["interface"]],
                 key="sel_interface"
             )
             st.session_state.db_selected_idx["interface"] = [opts_if.index(s) for s in sel_if]
         else:
             st.info("未检测到【接口清单】数据库")
-
     st.divider()
 
-    # 3、新增：附录C启用勾选框
+    # 附录C
     st.session_state.opts["have_append_c"] = st.checkbox(
-        "包含附录C 设计接口要求", value=st.session_state.opts["have_append_c"],
+        "包含附录C 设计接口要求",
+        value=opts["have_append_c"],
         key="chk_append_c"
     )
-    if st.session_state.opts["have_append_c"]:
+    if opts["have_append_c"]:
         st.subheader("附录C 设计接口要求")
         st.session_state.form["appendix_c"] = st.text_area(
-            "填写附录C内容", value=st.session_state.form["appendix_c"], height=200, key="input_appendix_c"
+            "填写附录C内容",
+            value=st.session_state.form["appendix_c"],
+            height=200,
+            key="input_appendix_c"
         )
-
     st.divider()
+
+    # 自定义附录
     st.subheader("📎 新增自定义附录（D/E/F…… 按需添加）")
-    # 新增附录按钮
     st.button("➕ 新增一组附录", on_click=add_dyn_append, key="btn_add_append")
 
-    # 渲染所有动态附录（D、E、F...）
+    # 动态附录循环：key采用字母唯一标识，渲染稳定
     for idx, item in enumerate(st.session_state.dyn_appendix):
-        # 用字母作为key的一部分，比纯索引更稳定
         letter = item["letter"]
         st.markdown(f"**附录{letter}**")
         item["name"] = st.text_input(
-            f"附录{letter} 名称", value=item["name"], key=f"dyn_name_{letter}"
+            f"附录{letter} 名称",
+            value=item["name"],
+            key=f"dyn_name_{letter}"
         )
         item["content"] = st.text_area(
-            f"附录{letter} 正文内容", value=item["content"], height=180, key=f"dyn_content_{letter}"
+            f"附录{letter} 正文内容",
+            value=item["content"],
+            height=180,
+            key=f"dyn_content_{letter}"
         )
         st.divider()
 
-    st.info("💡 前往第3章节勾选「转供应商施工设计」，本页面才会出现附录A填写框；附录C新增独立勾选开关；未勾选附录导出时自动跳过，后续附录序号向前补位。")
+    st.info("💡 未勾选的附录导出时自动跳过，后续附录序号向前补位，无空缺。")
     st.divider()
     render_nav_btn()
 
-# 15 生成最终文档【手动按钮触发生成Word，修复前端DOM报错】
+# 15 生成最终文档【稳定渲染版，无整块DOM增删】
 elif st.session_state.step == 15:
     st.markdown("# 生成规格书文档")
     st.divider()
 
-    # 初始化导出状态标记
-    if "run_export" not in st.session_state:
-        st.session_state.run_export = False
-
-    # 【回调函数：统一放在区块顶部，避免lambda重绘报错】
-    def reset_to_start():
-        st.session_state["step"] = 1
-
-    def trigger_export():
-        st.session_state["run_export"] = True
-
-    # 1. 输入自定义文件名
-    export_filename = st.text_input("自定义导出文件名称", value="设备技术规格书", key="export_name_input")
-
-    # 2. 手动触发生成Word按钮
-    st.button("📄 点击开始生成Word文档", on_click=trigger_export, type="primary", use_container_width=True)
+    # 文件名输入 + 生成按钮
+    export_filename = st.text_input(
+        "自定义导出文件名称",
+        value="设备技术规格书",
+        key="export_name_input"
+    )
+    st.button(
+        "📄 点击开始生成Word文档",
+        on_click=trigger_export,
+        type="primary",
+        use_container_width=True,
+        key="btn_trigger_export"
+    )
     st.divider()
 
     fill = st.session_state.form
@@ -739,7 +766,7 @@ elif st.session_state.step == 15:
         else:
             selected_dfs[key] = pd.DataFrame()
 
-    # ========== 正文拼接（完全保留原有逻辑） ==========
+    # ========== 正文拼接 ==========
     doc.append("# 1 定义与缩略语")
     doc.append(df_to_md(selected_dfs["dict"]))
     doc.append("\n---\n")
@@ -842,7 +869,7 @@ elif st.session_state.step == 15:
     doc.append(fill["other_content"])
     doc.append("\n---\n")
 
-    # ========== 动态收集启用的附录，自动向前补位、连续编号 ==========
+    # ========== 附录自动向前补位、连续编号 ==========
     append_list = []
     if opts["is_trans_design"]:
         append_list.append(("供应商提交文件清单", fill["appendix_a"]))
@@ -850,12 +877,11 @@ elif st.session_state.step == 15:
         append_list.append(("接口清单", df_to_md(selected_dfs["interface"])))
     if opts["have_append_c"]:
         append_list.append(("设计接口要求", fill["appendix_c"]))
-    # 追加自定义D/E/F附录
     for item in dyn_append_list:
         if item["name"].strip() or item["content"].strip():
             append_list.append((item["name"], item["content"]))
 
-    # 输出附录标题（自动从A开始连续编号）
+    # 附录标题
     title_lines = []
     for idx, (name, content) in enumerate(append_list):
         curr_letter = chr(ord("A") + idx)
@@ -863,7 +889,7 @@ elif st.session_state.step == 15:
     doc.append("\n".join(title_lines))
     doc.append("")
 
-    # 输出附录正文
+    # 附录正文
     for idx, (name, content) in enumerate(append_list):
         curr_letter = chr(ord("A") + idx)
         doc.append(f"## 附录{curr_letter} {name}")
@@ -873,7 +899,7 @@ elif st.session_state.step == 15:
     doc.append(f"\n文档生成时间：{now}")
     md_content = "\n".join(doc)
 
-    # 常驻：下载Markdown（随时可用）
+    # ========== 常驻：MD下载 + 文档预览 ==========
     st.download_button(
         label="📥 下载 Markdown 文件",
         data=md_content.encode("utf-8"),
@@ -884,25 +910,19 @@ elif st.session_state.step == 15:
     )
     st.divider()
 
-    # 常驻：文档预览
     with st.expander("📖 预览完整文档"):
         st.markdown(md_content)
     st.divider()
 
-    # ========== 仅点击按钮后，才执行 Pandoc 转换 + Word 下载 ==========
-    if st.session_state.run_export:
-        import tempfile
-        docx_bytes = None
-        convert_ok = True
-        err_msg = ""
+    # ========== 执行Word生成（标记触发，结果存状态） ==========
+    if st.session_state._need_export:
         temp_docx_path = None
-
+        ok = False
+        data = None
+        msg = ""
         try:
-            # 创建安全临时文件
             with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tmp_file:
                 temp_docx_path = tmp_file.name
-
-            # pandoc 转换
             pypandoc.convert_text(
                 source=md_content,
                 format="markdown",
@@ -910,43 +930,45 @@ elif st.session_state.step == 15:
                 outputfile=temp_docx_path,
                 extra_args=["--standalone"]
             )
-
-            # 读取二进制内容
             with open(temp_docx_path, "rb") as f:
-                docx_bytes = f.read()
-
+                data = f.read()
+            ok = True
         except Exception as e:
-            convert_ok = False
-            err_msg = str(e)
+            msg = str(e)
         finally:
-            # 强制清理临时文件
             if temp_docx_path and os.path.exists(temp_docx_path):
                 try:
                     os.remove(temp_docx_path)
                 except Exception:
                     pass
+        # 结果存入常驻状态
+        st.session_state.docx_result = {"ok": ok, "data": data, "msg": msg}
+        # 清除触发标记
+        st.session_state._need_export = False
 
-        # 展示转换结果 & Word下载按钮
-        if convert_ok and docx_bytes:
+    # ========== 常驻：Word结果区（容器永久存在，仅切换内容） ==========
+    res = st.session_state.docx_result
+    result_container = st.container()
+    with result_container:
+        if res["ok"] and res["data"]:
             st.success("✅ Word文档生成完毕！")
             st.download_button(
                 label="📥 下载 Word 文档",
-                data=docx_bytes,
+                data=res["data"],
                 file_name=f"{export_filename}.docx",
                 mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                 type="primary",
                 use_container_width=True,
                 key="dl_docx_final"
             )
-        else:
-            st.error(f"Word转换失败：{err_msg}")
+        elif not res["ok"] and res["msg"]:
+            st.error(f"Word转换失败：{res['msg']}")
             st.caption("可先下载Markdown，使用WPS/Typora另存为Word")
-
-        # 重置状态，支持多次点击生成
-        st.session_state.run_export = False
+        else:
+            st.info("👆 点击上方按钮生成Word文档")
 
     st.divider()
-    # 底部导航按钮（已修复，无lambda）
+    # 底部导航按钮
     col1, col2 = st.columns([1, 1])
     with col1:
         st.button("← 返回上一章", on_click=prev_page, use_container_width=True, key="btn_back_final")
